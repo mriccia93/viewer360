@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen">
+    <title>Viewer 360 Pro</title>
+    <style>
+        * { 
+            margin: 0; 
+            padding: 0; 
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        body { 
+            background: #000; 
+            overflow: hidden; 
+            height: 100vh; 
+            width: 100vw;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            position: fixed;
+        }
+        canvas { 
+            display: block; 
+            width: 100%; 
+            height: 100%;
+            touch-action: none;
+        }
+        #ui { 
+            position: fixed; 
+            bottom: 30px; 
+            left: 50%; 
+            transform: translateX(-50%); 
+            background: rgba(0,0,0,0.95); 
+            padding: 20px; 
+            border-radius: 20px; 
+            display: flex; 
+            gap: 12px; 
+            z-index: 100;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.8);
+        }
+        button { 
+            background: rgba(255,255,255,0.25); 
+            border: 2px solid rgba(255,255,255,0.3); 
+            color: white; 
+            padding: 16px 24px; 
+            border-radius: 14px; 
+            font-size: 18px; 
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            min-width: 60px;
+            touch-action: manipulation;
+        }
+        button:active { 
+            background: rgba(255,255,255,0.5);
+            transform: scale(0.95);
+            border-color: rgba(255,255,255,0.6);
+        }
+        #load { 
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border: none;
+            padding: 16px 28px;
+        }
+        #gyro { 
+            background: linear-gradient(135deg, #f093fb, #f5576c);
+            border: none;
+        }
+        #gyro.active {
+            background: linear-gradient(135deg, #11998e, #38ef7d);
+        }
+        input { 
+            display: none; 
+        }
+        #info { 
+            position: fixed; 
+            top: 30px; 
+            left: 50%; 
+            transform: translateX(-50%); 
+            background: rgba(0,0,0,0.95); 
+            color: white; 
+            padding: 16px 32px; 
+            border-radius: 16px; 
+            z-index: 100; 
+            text-align: center; 
+            font-size: 16px; 
+            max-width: 90%;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+        }
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.95);
+            color: white;
+            padding: 40px 60px;
+            border-radius: 20px;
+            display: none;
+            z-index: 200;
+            font-size: 20px;
+        }
+        .spinner {
+            width: 50px;
+            height: 50px;
+            margin: 20px auto 0;
+            border: 4px solid rgba(255,255,255,0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="info">🌐 Viewer 360 Pro - Tocca 📷 per caricare</div>
+    <div id="loading">
+        Ottimizzazione...
+        <div class="spinner"></div>
+    </div>
+    <canvas id="c"></canvas>
+    <div id="ui">
+        <button id="load">📷</button>
+        <input type="file" id="f" accept="image/*">
+        <button id="gyro">📱</button>
+        <button id="zoomIn">+</button>
+        <button id="zoomOut">−</button>
+        <button id="resetBtn">↺</button>
+    </div>
+    <script>
+        const c = document.getElementById('c');
+        const ctx = c.getContext('2d', { alpha: false, desynchronized: true });
+        const info = document.getElementById('info');
+        const loading = document.getElementById('loading');
+        const gyroBtn = document.getElementById('gyro');
+        const loadBtn = document.getElementById('load');
+        const zoomInBtn = document.getElementById('zoomIn');
+        const zoomOutBtn = document.getElementById('zoomOut');
+        const resetBtn = document.getElementById('resetBtn');
+        const fileInput = document.getElementById('f');
+        
+        let img = null;
+        let dragging = false;
+        let lastX = 0, lastY = 0;
+        let yaw = 0, pitch = 0, fov = 75;
+        let gyroActive = false;
+        let baseOrientation = null;
+        
+        function resize() {
+            c.width = window.innerWidth;
+            c.height = window.innerHeight;
+            render();
+        }
+        
+        window.addEventListener('resize', resize);
+        resize();
+        
+        // Pulsante carica - touch events
+        loadBtn.addEventListener('touchend', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            fileInput.click();
+        });
+        
+        loadBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            fileInput.click();
+        });
+        
+        // Pulsante giroscopio
+        gyroBtn.addEventListener('touchend', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleGyro();
+        });
+        
+        gyroBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            toggleGyro();
+        });
+        
+        // Zoom buttons
+        zoomInBtn.addEventListener('touchend', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            zoom(-10);
+        });
+        
+        zoomInBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            zoom(-10);
+        });
+        
+        zoomOutBtn.addEventListener('touchend', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            zoom(10);
+        });
+        
+        zoomOutBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            zoom(10);
+        });
+        
+        // Reset button
+        resetBtn.addEventListener('touchend', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            reset();
+        });
+        
+        resetBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            reset();
+        });
+        
+        function toggleGyro() {
+            if (!img) {
+                info.textContent = '⚠️ Carica prima un\'immagine!';
+                setTimeout(() => info.textContent = '🌐 Viewer 360 Pro', 2000);
+                return;
+            }
+            gyroActive ? stopGyro() : enableGyro();
+        }
+        
+        function enableGyro() {
+            if (typeof DeviceOrientationEvent !== 'undefined' && 
+                typeof DeviceOrientationEvent.requestPermission === 'function') {
+                DeviceOrientationEvent.requestPermission()
+                    .then(response => {
+                        if (response === 'granted') {
+                            startGyro();
+                        } else {
+                            info.textContent = '❌ Permesso negato';
+                        }
+                    })
+                    .catch(err => {
+                        console.error(err);
+                        info.textContent = '❌ Errore giroscopio';
+                    });
+            } else {
+                startGyro();
+            }
+        }
+        
+        function startGyro() {
+            gyroActive = true;
+            baseOrientation = null;
+            gyroBtn.classList.add('active');
+            gyroBtn.textContent = '📱 ON';
+            window.addEventListener('deviceorientation', handleOrientation);
+            info.textContent = '📱 Giroscopio attivo - Muovi il dispositivo';
+        }
+        
+        function stopGyro() {
+            gyroActive = false;
+            gyroBtn.classList.remove('active');
+            gyroBtn.textContent = '📱';
+            window.removeEventListener('deviceorientation', handleOrientation);
+            info.textContent = '🌐 Giroscopio disattivato';
+        }
+        
+        function handleOrientation(e) {
+            if (!gyroActive || !img) return;
+            
+            const alpha = e.alpha || 0;
+            const beta = e.beta || 0;
+            
+            if (!baseOrientation) {
+                baseOrientation = { alpha, beta };
+            }
+            
+            let deltaAlpha = alpha - baseOrientation.alpha;
+            if (deltaAlpha > 180) deltaAlpha -= 360;
+            if (deltaAlpha < -180) deltaAlpha += 360;
+            
+            yaw = -deltaAlpha * 1.5;
+            pitch = beta - baseOrientation.beta;
+            pitch = Math.max(-85, Math.min(85, pitch));
+            
+            render();
+        }
+        
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            loading.style.display = 'block';
+            info.textContent = '⏳ Ottimizzazione in corso...';
+            
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                const image = new Image();
+                image.onload = function() {
+                    const targetWidth = 2048;
+                    
+                    if (image.width > targetWidth) {
+                        const canvas = document.createElement('canvas');
+                        const context = canvas.getContext('2d');
+                        canvas.width = targetWidth;
+                        canvas.height = Math.floor(image.height * (targetWidth / image.width));
+                        context.imageSmoothingQuality = 'high';
+                        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+                        
+                        const resized = new Image();
+                        resized.onload = function() {
+                            img = resized;
+                            loading.style.display = 'none';
+                            info.textContent = '✅ Immagine caricata - Trascina per ruotare';
+                            render();
+                        };
+                        resized.src = canvas.toDataURL('image/jpeg', 0.92);
+                    } else {
+                        img = image;
+                        loading.style.display = 'none';
+                        info.textContent = '✅ Immagine caricata - Trascina per ruotare';
+                        render();
+                    }
+                };
+                image.src = evt.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+        
+        // Touch controls sul canvas
+        c.addEventListener('touchstart', function(e) {
+            if (gyroActive) return;
+            e.preventDefault();
+            if (e.touches.length === 1) {
+                dragging = true;
+                lastX = e.touches[0].clientX;
+                lastY = e.touches[0].clientY;
+            }
+        }, { passive: false });
+        
+        c.addEventListener('touchmove', function(e) {
+            if (gyroActive) return;
+            e.preventDefault();
+            if (dragging && e.touches.length === 1) {
+                yaw += (e.touches[0].clientX - lastX) * 0.3;
+                pitch -= (e.touches[0].clientY - lastY) * 0.3;
+                pitch = Math.max(-85, Math.min(85, pitch));
+                lastX = e.touches[0].clientX;
+                lastY = e.touches[0].clientY;
+                render();
+            }
+        }, { passive: false });
+        
+        c.addEventListener('touchend', function() {
+            dragging = false;
+        });
+        
+        // Mouse controls
+        c.addEventListener('mousedown', function(e) {
+            if (gyroActive) return;
+            dragging = true;
+            lastX = e.clientX;
+            lastY = e.clientY;
+        });
+        
+        c.addEventListener('mousemove', function(e) {
+            if (!dragging || gyroActive) return;
+            yaw += (e.clientX - lastX) * 0.3;
+            pitch -= (e.clientY - lastY) * 0.3;
+            pitch = Math.max(-85, Math.min(85, pitch));
+            lastX = e.clientX;
+            lastY = e.clientY;
+            render();
+        });
+        
+        c.addEventListener('mouseup', function() {
+            dragging = false;
+        });
+        
+        function zoom(delta) {
+            fov = Math.max(30, Math.min(120, fov + delta));
+            render();
+        }
+        
+        function reset() {
+            yaw = 0;
+            pitch = 0;
+            fov = 75;
+            if (gyroActive) baseOrientation = null;
+            render();
+        }
+        
+        function render() {
+            if (!img) {
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, c.width, c.height);
+                ctx.fillStyle = '#666';
+                ctx.font = '20px -apple-system';
+                ctx.textAlign = 'center';
+                ctx.fillText('Tocca 📷 per caricare un\'immagine 360°', c.width/2, c.height/2);
+                return;
+            }
+            
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, c.width, c.height);
+            
+            const w = c.width, h = c.height, aspect = w / h;
+            const fovRad = fov * Math.PI / 180;
+            const yawRad = yaw * Math.PI / 180;
+            const pitchRad = pitch * Math.PI / 180;
+            const cosPitch = Math.cos(pitchRad), sinPitch = Math.sin(pitchRad);
+            const cosYaw = Math.cos(yawRad), sinYaw = Math.sin(yawRad);
+            const cx = cosPitch * sinYaw, cy = sinPitch, cz = cosPitch * cosYaw;
+            const ux = -sinPitch * sinYaw, uy = cosPitch, uz = -sinPitch * cosYaw;
+            const rx = uy * cz - uz * cy, ry = uz * cx - ux * cz, rz = ux * cy - uy * cx;
+            const halfFov = Math.tan(fovRad / 2);
+            const tileSize = 4;
+            
+            for (let py = 0; py < h; py += tileSize) {
+                for (let px = 0; px < w; px += tileSize) {
+                    const x = (2 * (px + 2) / w - 1) * aspect * halfFov;
+                    const y = (1 - 2 * (py + 2) / h) * halfFov;
+                    const dx = cx + x * rx + y * ux;
+                    const dy = cy + x * ry + y * uy;
+                    const dz = cz + x * rz + y * uz;
+                    const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                    const ndx = dx / len, ndy = dy / len, ndz = dz / len;
+                    const theta = Math.atan2(ndx, ndz);
+                    const phi = Math.asin(ndy);
+                    const u = (theta / (Math.PI * 2) + 0.5) * img.width;
+                    const v = (0.5 - phi / Math.PI) * img.height;
+                    let sx = Math.floor(u) % img.width;
+                    if (sx < 0) sx += img.width;
+                    let sy = Math.max(0, Math.min(img.height - tileSize, Math.floor(v)));
+                    try {
+                        ctx.drawImage(img, sx, sy, tileSize, tileSize, px, py, tileSize, tileSize);
+                    } catch(e) {}
+                }
+            }
+        }
+        
+        render();
+    </script>
+</body>
+</html>

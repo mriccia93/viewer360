@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="360 Viewer">
+<title>Viewer 360 Offline</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-user-select: none; user-select: none; }
+body { background: #000; overflow: hidden; height: 100vh; font-family: -apple-system, sans-serif; touch-action: none; }
+#canvas { display: block; width: 100%; height: 100%; }
+.ui { position: fixed; background: rgba(0,0,0,0.7); backdrop-filter: blur(10px); color: white; padding: 15px 25px; border-radius: 12px; z-index: 100; font-size: 16px; }
+#info { top: 20px; left: 50%; transform: translateX(-50%); }
+#controls { bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; }
+button { background: #667eea; border: none; color: white; padding: 15px 20px; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; }
+button:active { background: #5568d3; }
+button.active { background: #11998e; }
+input { display: none; }
+#loading { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.9); color: white; padding: 30px 50px; border-radius: 15px; z-index: 200; font-size: 18px; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<div id="info" class="ui">📱 Viewer 360 Offline</div>
+<div id="loading" class="hidden">Caricamento...</div>
+<div id="controls" class="ui">
+    <button id="loadBtn">📷 Carica</button>
+    <input type="file" id="fileInput" accept="image/*">
+    <button id="gyroBtn">🧭 Gyro</button>
+    <button id="resetBtn">↺ Reset</button>
+</div>
+
+<script>
+'use strict';
+
+// ============================================
+// VIEWER 360 COMPLETAMENTE OFFLINE
+// Zero dipendenze esterne!
+// ============================================
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+const info = document.getElementById('info');
+const loading = document.getElementById('loading');
+
+let img = null;
+let gyroActive = false;
+let yaw = 0, pitch = 0;
+let targetYaw = 0, targetPitch = 0;
+let isDragging = false;
+let lastX = 0, lastY = 0;
+let initialAlpha = null, initialBeta = null, initialGamma = null;
+let deviceOrientation = 0;
+
+// Resize canvas
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    render();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ============================================
+// CARICAMENTO IMMAGINE
+// ============================================
+document.getElementById('loadBtn').onclick = () => {
+    document.getElementById('fileInput').click();
+};
+
+document.getElementById('fileInput').onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    loading.classList.remove('hidden');
+    const reader = new FileReader();
+    
+    reader.onload = (ev) => {
+        const image = new Image();
+        image.onload = () => {
+            img = image;
+            loading.classList.add('hidden');
+            info.textContent = '✅ Immagine caricata';
+            render();
+        };
+        image.src = ev.target.result;
+    };
+    
+    reader.readAsDataURL(file);
+};
+
+// ============================================
+// RENDERING 360
+// ============================================
+function render() {
+    if (!img) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#666';
+        ctx.font = '20px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Carica un\'immagine 360°', canvas.width/2, canvas.height/2);
+        return;
+    }
+    
+    const fov = Math.PI / 2; // 90 gradi
+    const aspect = canvas.width / canvas.height;
+    
+    // Calcola porzione visibile dell'immagine equirettangolare
+    const imgW = img.width;
+    const imgH = img.height;
+    
+    // Normalizza angoli
+    let y = yaw % (Math.PI * 2);
+    if (y < 0) y += Math.PI * 2;
+    
+    let p = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+    
+    // Converti angoli in coordinate immagine
+    const centerU = y / (Math.PI * 2);
+    const centerV = 0.5 - (p / Math.PI);
+    
+    // Calcola dimensioni viewport nell'immagine
+    const viewWidthRatio = fov / (Math.PI * 2);
+    const viewHeightRatio = (fov / aspect) / Math.PI;
+    
+    // Coordinate sorgente
+    let sx = (centerU - viewWidthRatio / 2) * imgW;
+    let sy = (centerV - viewHeightRatio / 2) * imgH;
+    let sw = viewWidthRatio * imgW;
+    let sh = viewHeightRatio * imgH;
+    
+    // Gestisci wrapping orizzontale
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    if (sx < 0) {
+        // Parte sinistra (fine immagine)
+        const rightPart = -sx;
+        ctx.drawImage(img, 
+            imgW + sx, sy, rightPart, sh,
+            0, 0, (rightPart / sw) * canvas.width, canvas.height);
+        // Parte destra (inizio immagine)
+        ctx.drawImage(img,
+            0, sy, sw + sx, sh,
+            (rightPart / sw) * canvas.width, 0, ((sw + sx) / sw) * canvas.width, canvas.height);
+    } else if (sx + sw > imgW) {
+        // Wraparound sul lato destro
+        const leftPart = imgW - sx;
+        ctx.drawImage(img,
+            sx, sy, leftPart, sh,
+            0, 0, (leftPart / sw) * canvas.width, canvas.height);
+        const rightPart = sx + sw - imgW;
+        ctx.drawImage(img,
+            0, sy, rightPart, sh,
+            (leftPart / sw) * canvas.width, 0, (rightPart / sw) * canvas.width, canvas.height);
+    } else {
+        // Normale (nessun wrapping)
+        sy = Math.max(0, Math.min(imgH - sh, sy));
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+    }
+}
+
+// ============================================
+// TOUCH CONTROLS
+// ============================================
+canvas.addEventListener('touchstart', (e) => {
+    if (gyroActive || !img) return;
+    e.preventDefault();
+    isDragging = true;
+    lastX = e.touches[0].clientX;
+    lastY = e.touches[0].clientY;
+});
+
+canvas.addEventListener('touchmove', (e) => {
+    if (!isDragging || gyroActive || !img) return;
+    e.preventDefault();
+    
+    const dx = e.touches[0].clientX - lastX;
+    const dy = e.touches[0].clientY - lastY;
+    
+    targetYaw -= dx * 0.005;
+    targetPitch += dy * 0.005;
+    
+    lastX = e.touches[0].clientX;
+    lastY = e.touches[0].clientY;
+});
+
+canvas.addEventListener('touchend', () => {
+    isDragging = false;
+});
+
+// Mouse controls
+canvas.addEventListener('mousedown', (e) => {
+    if (gyroActive || !img) return;
+    isDragging = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+});
+
+canvas.addEventListener('mousemove', (e) => {
+    if (!isDragging || gyroActive || !img) return;
+    
+    const dx = e.clientX - lastX;
+    const dy = e.clientY - lastY;
+    
+    targetYaw -= dx * 0.005;
+    targetPitch += dy * 0.005;
+    
+    lastX = e.clientX;
+    lastY = e.clientY;
+});
+
+canvas.addEventListener('mouseup', () => {
+    isDragging = false;
+});
+
+// ============================================
+// GIROSCOPIO
+// ============================================
+document.getElementById('gyroBtn').onclick = () => {
+    if (!img) {
+        info.textContent = '⚠️ Carica un\'immagine prima';
+        setTimeout(() => info.textContent = '📱 Viewer 360 Offline', 2000);
+        return;
+    }
+    
+    gyroActive ? stopGyro() : startGyro();
+};
+
+function startGyro() {
+    if (typeof DeviceOrientationEvent !== 'undefined' && 
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission().then(response => {
+            if (response === 'granted') {
+                activateGyro();
+            } else {
+                info.textContent = '❌ Permesso negato';
+                setTimeout(() => info.textContent = '📱 Viewer 360 Offline', 2000);
+            }
+        });
+    } else {
+        activateGyro();
+    }
+}
+
+function activateGyro() {
+    gyroActive = true;
+    initialAlpha = null;
+    initialBeta = null;
+    initialGamma = null;
+    document.getElementById('gyroBtn').classList.add('active');
+    document.getElementById('gyroBtn').textContent = '🧭 ON';
+    window.addEventListener('deviceorientation', handleOrientation, true);
+    info.textContent = '✅ Giroscopio attivo';
+}
+
+function stopGyro() {
+    gyroActive = false;
+    document.getElementById('gyroBtn').classList.remove('active');
+    document.getElementById('gyroBtn').textContent = '🧭 Gyro';
+    window.removeEventListener('deviceorientation', handleOrientation, true);
+    info.textContent = '📱 Giroscopio disattivato';
+}
+
+function handleOrientation(e) {
+    if (!gyroActive) return;
+    
+    let alpha = e.alpha || 0;
+    let beta = e.beta || 0;
+    let gamma = e.gamma || 0;
+    
+    if (e.webkitCompassHeading !== undefined) {
+        alpha = e.webkitCompassHeading;
+    }
+    
+    const orientation = window.orientation || 0;
+    
+    if (initialAlpha === null || deviceOrientation !== orientation) {
+        initialAlpha = alpha;
+        initialBeta = beta;
+        initialGamma = gamma;
+        deviceOrientation = orientation;
+        return;
+    }
+    
+    let da = alpha - initialAlpha;
+    let db = beta - initialBeta;
+    let dg = gamma - initialGamma;
+    
+    // Normalizza
+    while (da > 180) da -= 360;
+    while (da < -180) da += 360;
+    while (db > 180) db -= 360;
+    while (db < -180) db += 360;
+    while (dg > 180) dg -= 360;
+    while (dg < -180) dg += 360;
+    
+    if (orientation === 0) {
+        // Portrait
+        targetYaw = -da * Math.PI / 180;
+        targetPitch = db * Math.PI / 180;
+    } else if (orientation === 90) {
+        // Landscape left
+        targetYaw = -da * Math.PI / 180;
+        targetPitch = -dg * Math.PI / 180;
+    } else if (orientation === -90) {
+        // Landscape right
+        targetYaw = -da * Math.PI / 180;
+        targetPitch = dg * Math.PI / 180;
+    }
+}
+
+// ============================================
+// RESET
+// ============================================
+document.getElementById('resetBtn').onclick = () => {
+    targetYaw = 0;
+    targetPitch = 0;
+    yaw = 0;
+    pitch = 0;
+    
+    if (gyroActive) {
+        initialAlpha = null;
+        initialBeta = null;
+        initialGamma = null;
+    }
+    
+    render();
+};
+
+// ============================================
+// ANIMATION LOOP
+// ============================================
+function animate() {
+    requestAnimationFrame(animate);
+    
+    // Smooth interpolation
+    const smoothing = gyroActive ? 0.2 : 0.15;
+    yaw += (targetYaw - yaw) * smoothing;
+    pitch += (targetPitch - pitch) * smoothing;
+    
+    // Limita pitch
+    targetPitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, targetPitch));
+    pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+    
+    render();
+}
+
+animate();
+
+// ============================================
+// ORIENTAMENTO
+// ============================================
+window.addEventListener('orientationchange', () => {
+    if (gyroActive) {
+        setTimeout(() => {
+            initialAlpha = null;
+            initialBeta = null;
+            initialGamma = null;
+        }, 500);
+    }
+});
+
+// ============================================
+// INFO
+// ============================================
+console.log('✅ Viewer 360 Offline caricato');
+console.log('📦 Zero dipendenze esterne');
+console.log('💾 Funziona completamente offline');
+</script>
+
+</body>
+</html>
